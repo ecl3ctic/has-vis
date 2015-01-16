@@ -1,0 +1,186 @@
+
+// Initialize Cola
+
+var d3cola = createD3Cola();
+
+function createD3Cola() {
+    return cola.d3adaptor().convergenceThreshold(0.1);
+}
+
+// Communication stuff
+
+var port = 56250;
+var ghci = new WebSocket("ws://localhost:" + port);
+
+ghci.onopen = function (event) {
+    ghci.send("Connected to GHCi.");
+}
+
+// Send
+/*
+$("#commandLine").submit(function (e) {
+    e.preventDefault();
+    // Grab the input text, send it, and clear the box
+    var input = $("#theInput");
+    ghci.send(input.val());
+    input.val("");
+});
+*/
+
+// Check whether a string starts with the given prefix
+String.prototype.startsWith = function (str) {
+    return this.lastIndexOf(str, 0) === 0;
+};
+
+var objects;
+var links;
+
+// Receive
+ghci.onmessage = function(event) {
+    var data;
+    try {
+        data = $.parseJSON(event.data);
+    } catch (e) {
+        data = event.data;
+    }
+    if (data instanceof Array) { // Graph data
+        // Clear previous graph
+        clearGraph();
+        
+        // Parse objects
+        objects = data;
+        links = [];
+        objects.forEach(function (val, i, arr) {
+            // Assign random starting position
+            val.x = Math.random() * canvasWidth;
+            val.y = Math.random() * canvasHeight;
+            val.id = i;
+            // Determine links
+            Object.keys(val).forEach(function (property) {
+                if (property.startsWith("ptr")) {
+                    var p = val[property];
+                    if (p instanceof Array) {
+                        p.forEach(function (j) {
+                            links.push({source: i, target: j});
+                            //links.push({source: val, target: arr[i]});
+                        });
+                    } else {
+                        links.push({source: i, target: p});
+                        //links.push({source: val, target: arr[p]});
+                    }
+                }
+            });
+        });
+        
+        // Give graph info to Cola for solving
+        //d3cola.nodes(objects).links(links);
+        
+        d3cola
+            .avoidOverlaps(true)
+            .flowLayout('x', 150)
+            .size([canvasWidth, canvasHeight])
+            .nodes(objects)
+            .links(links)
+            .jaccardLinkLengths(150);
+        
+        // Create link graphics
+        var link = vis.selectAll(".link")
+            .data(links)
+            .enter().append("path")
+            .attr("class", "link");
+
+        // Create node graphics
+        var margin = 10, pad = 12;
+        var node = vis.selectAll(".node")
+            .data(objects)
+            .enter().append("rect")
+            .attr("class", "node")
+            .call(d3cola.drag);
+
+        // Create label graphics, and calculate node
+        // boundaries for use by the layout algorithm.
+        var label = vis.selectAll(".label")
+            .data(objects)
+            .enter().append("text")
+            .attr("class", "label")
+            .text(function (d) { return d.closureType; }) // Label text
+            .call(d3cola.drag)
+            .each(function (d) {
+                var b = this.getBBox(); // Bounding box of rect
+                var extra = 2 * margin + 2 * pad;
+                d.width = b.width + extra;
+                d.height = b.height + extra;
+            });
+            
+        var lineFunction = d3.svg.line()
+            .x(function (d) { return d.x; })
+            .y(function (d) { return d.y; })
+            .interpolate("linear");
+            
+        var routeEdges = function () {
+            d3cola.prepareEdgeRouting(20);
+            link.attr("d", function (d) {
+                return lineFunction(d3cola.routeEdge(d
+                // // show visibility graph
+                    , function (g) {
+                        if (d.source.id === 10 && d.target.id === 11) {
+                        g.E.forEach(function (e) {
+                            vis.append("line").attr("x1", e.source.p.x).attr("y1", e.source.p.y)
+                                .attr("x2", e.target.p.x).attr("y2", e.target.p.y)
+                                .attr("stroke", "green");
+                        });
+                        }
+                    })); 
+            });
+            if (isIE()) link.each(function (d) { this.parentNode.insertBefore(this, this) });
+        }
+        
+        // 10 iter no contraints, 30 iter some, 100 iter all.
+        d3cola.start(10, 30, 100).on("tick", function () {
+                node.each(function (d) { d.innerBounds = d.bounds.inflate(-margin); })
+                    .attr("x", function (d) { return d.innerBounds.x; })
+                    .attr("y", function (d) { return d.innerBounds.y; })
+                    .attr("width", function (d) { return d.innerBounds.width(); })
+                    .attr("height", function (d) { return d.innerBounds.height(); });
+
+                link.attr("d", function (d) {
+                    cola.vpsc.makeEdgeBetween(d, d.source.innerBounds, d.target.innerBounds, 5);
+                    var lineData = [{ x: d.sourceIntersection.x, y: d.sourceIntersection.y }, { x: d.arrowStart.x, y: d.arrowStart.y }];
+                    return lineFunction(lineData);
+                });
+                if (isIE()) link.each(function (d) { this.parentNode.insertBefore(this, this) });
+
+                label
+                    .attr("x", function (d) { return d.x })
+                    .attr("y", function (d) { return d.y + (margin + pad) / 2 });
+
+            }).on("end", routeEdges);
+    } else {
+        // If the data is an object with an "action" property, execute the action.
+        if (data && data.action) {
+            switch (data.action) {
+                case "clear":
+                    // Clear the graph
+                    clearGraph();
+                    break;
+                case "close":
+                    window.close();
+                default:
+                    console.log("Unknown action: " + data.action);
+            }
+        } else {
+            console.log("Unexpected data: " + data);
+        }
+    }
+}
+
+function clearGraph() {
+    d3cola.stop();
+    d3cola = createD3Cola();
+    d3.selectAll(".link").remove();
+    d3.selectAll(".node").remove();
+    d3.selectAll(".label").remove();
+}
+
+// Check whether browser is IE
+function isIE() { return ((navigator.appName == 'Microsoft Internet Explorer') || ((navigator.appName == 'Netscape') && (new RegExp("Trident/.*rv:([0-9]{1,}[\.0-9]{0,})").exec(navigator.userAgent) != null))); }

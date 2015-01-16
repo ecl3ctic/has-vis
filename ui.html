@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>HasVis</title>
+        <script type="text/javascript" src="extern/jquery-1.10.2.min.js"></script>
+        <script type="text/javascript" src="extern/d3.v3.min.js"></script>
+        <script type="text/javascript" src="extern/cola.v3.min.js"></script>
+        <link rel="stylesheet" href="extern/github.css">
+        <!--
+        <script type="text/javascript" src="../WebCola/WebCola/extern/jquery-1.10.2.min.js"></script>
+        <script type="text/javascript" src="../WebCola/WebCola/extern/d3.v3.min.js"></script>
+        <script type="text/javascript" src="../WebCola/WebCola/src/adaptor.js"></script>
+        <script type="text/javascript" src="../WebCola/WebCola/cola.v3.min.js"></script>
+        <!--<script type="text/javascript" src="../WebCola/WebCola/descent.js"></script>
+        <link rel="stylesheet" href="../WebCola/WebCola/extern/hljs/styles/github.css">
+        -->
+    </head>
+    <style>
+        body {
+            background-color: #dddddd;
+        }
+        
+        .background {
+            stroke: white;
+            stroke-width: 1px;
+            fill: white;
+        }
+
+        .node {
+            stroke: black;
+            stroke-width: 1.5px;
+            cursor: move;
+            fill: lightcoral;
+        }
+
+        .link {
+            fill: none;
+            stroke: #000;
+            stroke-width: 3px;
+            opacity: 0.7;
+            marker-end: url(#end-arrow);
+        }
+
+        .label {
+            fill: black;
+            font-family: Verdana;
+            font-size: 14px;
+            text-anchor: middle;
+            cursor: move;
+        }
+    </style>
+    <body>
+        <h1>Cola Test</h1>
+        
+        <script type="text/javascript">
+            var canvasWidth = 1200;
+            var canvasHeight = 800;
+            
+            var svg = d3.select("body")
+                .append("svg")
+                .attr("width", canvasWidth)
+                .attr("height", canvasHeight)
+                .attr("pointer-events", "all");
+            
+            svg.append('rect')
+                .attr('class', 'background')
+                .attr('width', "100%")
+                .attr('height', "100%")
+                .call(d3.behavior.zoom().on("zoom", redraw)); 
+                
+            var vis = svg.append("g");
+            
+            function redraw() {
+                vis.attr("transform", "translate(" + d3.event.translate + ")" + " scale(" + d3.event.scale + ")");
+            }
+            
+            // Set initial zoom
+            d3.behavior.zoom().scale(0.6);
+            
+            svg.append('svg:defs').append('svg:marker')
+                .attr('id', 'end-arrow')
+                .attr('viewBox', '0 -5 10 10')
+                .attr('refX', 8)
+                .attr('markerWidth', 6)
+                .attr('markerHeight', 6)
+                .attr('orient', 'auto')
+              .append('svg:path')
+                .attr('d', 'M0,-5L10,0L0,5L2,0')
+                .attr('stroke-width', '0px')
+                .attr('fill', '#000');
+        </script>
+        
+        <!--<form id="commandLine">
+            <p>GHCi command:</p>
+            <input id="theInput" size="80"></input>
+        </form>-->
+        
+        <script type="text/javascript" src="ui.js"></script>
+    </body>
+</html>
