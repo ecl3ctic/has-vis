@@ -12,7 +12,7 @@ import qualified Data.IntMap as IM
 -- Imports for JSON conversion
 import qualified Data.Aeson as Aeson
 import qualified Data.HashMap.Strict as HM
-import Data.Scientific (scientific)
+import Data.Scientific (scientific, floatingOrInteger)
 import qualified Data.Text as T
 import qualified Data.Vector as Vec
 -- Other
@@ -21,6 +21,9 @@ import Control.Exception
 import Control.Concurrent
 import Control.Monad
 import System.IO.Unsafe
+import Data.Maybe (fromJust, isJust)
+import Unsafe.Coerce (unsafeCoerce)
+import Data.List (sortBy, (\\))
 
 -- TODO: Test HasVis on Windows
 #if WINDOWS
@@ -28,6 +31,8 @@ import Foreign.C.String (CString, withCString)
 #else
 import qualified System.Process as Proc
 #endif
+
+(+++) = T.append
 
 -- Whether the visualisation is currently running
 visRunning :: MVar Bool
@@ -109,11 +114,10 @@ mainLoop browser = do
     case message of
         ViewMessage box label -> do
             -- Build the heap graph
-            HV.HeapGraph hgMap <- HV.buildHeapGraph maxBound () box
-            -- ASSUMPTION: The IntMap's keys correspond to array indices (in order)
-            let heapObjects = IM.elems $ IM.map HV.hgeClosure hgMap
-            -- Send JSON-ified heap objects to the browser app
-            WSK.sendDataMessage browser (WSK.Text (Aeson.encode heapObjects))
+            graph <- HV.buildHeapGraph 1000 () box
+            -- Construct a simplified JSON version and send it to the browser
+            let jsGraph = buildJSGraph graph label
+            WSK.sendDataMessage browser (WSK.Text (Aeson.encode jsGraph))
             mainLoop browser
         UpdateMessage -> mainLoop browser -- TODO
         ClearMessage -> do
@@ -172,6 +176,230 @@ launchBrowser url = forkIO (Proc.rawSystem
     [url] >> return ()) >> return ()
 #endif
 
+type Index = HV.HeapGraphIndex
+type Closure = HV.GenClosure (Maybe Index)
+type Node = Aeson.Object
+type Edge = Aeson.Object
+
+-- Turn the messy HeapView graph into a minimal, clean JSON representation that
+-- omits unnecessary information.
+buildJSGraph :: HV.HeapGraph () -> String -> Aeson.Value
+buildJSGraph graph label = let
+        startNodeIndex = -1 :: Int
+        startNode = HM.insert (T.pack "name") (Aeson.toJSON $ "Expression: " ++ label)
+                  $ HM.insert (T.pack "id") (Aeson.toJSON startNodeIndex)
+                  $ HM.empty
+        -- Build (most of) the graph.
+        (allNodes, someEdges, findEdges, visitedAcc) =
+            innerBuild graph (Just HV.heapGraphRoot) startNodeIndex 0 []
+        -- Give the final list of nodes to the thunk which will search for the
+        -- remaining edges to be shown.
+        allEdges = fst (findEdges allNodes visitedAcc) ++ someEdges
+        -- Sort the cons nodes by biggest first so the merging happens in the right order
+        biggestFirst a b = getIntAttr "id" b `compare` getIntAttr "id" a
+        consNodes = filter (\n -> getName n == T.pack ":") $ sortBy biggestFirst allNodes
+        -- This huge nasty function takes the graph and returns a new graph with the
+        -- children of the given cons node merged together if they have no other parents.
+        mergeChildren :: [Node] -> [Edge] -> Node -> ([Node], [Edge])
+        mergeChildren nodes edges thisNode = let
+                selectEdgesWith attr val = filter (\e -> getIntAttr attr e == val) edges
+                myID = getIntAttr "id" thisNode
+                myEdges = selectEdgesWith "source" myID
+                childNodes = filter (\n -> getIntAttr "id" n `elem` (map (getIntAttr "target") myEdges)) nodes
+                mergeables = filter (
+                    \n -> let iD = getIntAttr "id" n in
+                            iD /= myID
+                         && length (selectEdgesWith "target" iD) == 1
+                         && (length (selectEdgesWith "source" iD) == 0 || (isJust $ HM.lookup (T.pack "is-cons") n))) childNodes
+                edgesToMergeables = concat $ map (\n -> selectEdgesWith "target" $ getIntAttr "id" n) mergeables
+                edgesFromMergeables = concat $ map (\n -> selectEdgesWith "source" (getIntAttr "id" n)) mergeables
+                -- Change the owner of the edges
+                adjustedEdges = map (\e -> HM.insert (T.pack "source") (Aeson.toJSON myID) e) edgesFromMergeables
+                -- Extract the text from the children
+                (leftText, rightText) = case length mergeables of
+                    0 -> (T.pack "_",T.pack "_")
+                    1 -> if getIntAttr "ptr-index" m1Edge == 0 then
+                            (m1Name, T.pack "_")
+                        else if T.head m1Name == '[' then
+                            (T.pack "_", T.dropEnd 1 $ T.tail m1Name)
+                        else
+                            (T.pack "_", m1Name)
+                        where m1 = head mergeables
+                              m1Name = getName m1
+                              m1Edge = head edgesToMergeables
+                    2 -> if getIntAttr "ptr-index" m1Edge == 0 then
+                            if T.head m2Name == '[' then
+                                (m1Name, T.dropEnd 1 $ T.tail m2Name)
+                            else
+                                (m1Name, m2Name)
+                        else
+                            if T.head m1Name == '[' then
+                                (m2Name, T.dropEnd 1 $ T.tail m1Name)
+                            else
+                                (m2Name, m1Name)
+                        where m1 = mergeables !! 0
+                              m2 = mergeables !! 1
+                              m1Name = getName m1
+                              m2Name = getName m2
+                              m1Edge = edgesToMergeables !! 0
+                -- Merge the text
+                name = '[' `T.cons` leftText +++ (',' `T.cons` rightText +++ (T.pack "]"))
+                newNode = HM.insert (T.pack "name") (Aeson.toJSON name) thisNode
+            in (newNode : (nodes \\ (thisNode:mergeables)), adjustedEdges ++ ((edges \\ edgesToMergeables) \\ edgesFromMergeables))
+        -- Do the merging
+        (finalNodes, finalEdges) = foldl (\(n,e) c -> mergeChildren n e c) (allNodes, allEdges) consNodes
+    in
+        Aeson.toJSON (startNode : finalNodes, finalEdges)
+
+innerBuild :: HV.HeapGraph ()
+    -> Maybe Index
+    -> Index
+    -> Int -- The index of this node in the parent's pointers
+    -> [Index] -- Accumulator of visited nodes
+    -> ([Node], [Edge], ([Node] -> [Index] -> ([Edge], [Index])), [Index]) -- Return the subgraph, a closure to generate the rest of the edges, and the accumulator
+innerBuild graph myPtr parentID myIndex visitedAcc = case myPtr of
+  Just iD -> let
+      closure = HV.hgeClosure $ fromJust $ HV.lookupHeapGraph iD graph
+      makeObjectWithName name =
+          HM.insert (T.pack "name") (Aeson.toJSON name)
+        $ HM.insert (T.pack "id") (Aeson.toJSON iD)
+        $ HM.empty
+      makeNodeAndRecurse name ptrs = (n, e, f, v)-- Recurse again normally
+        where (n, e, f, v, _) = foldl chainBuilds ([makeObjectWithName name],
+                                [makeEdge parentID iD myIndex],
+                                nullFind,
+                                iD : visitedAcc,
+                                0) ptrs
+      makeNodeAndFind name ptrs = -- Switch to "find edges" mode
+        ([makeObjectWithName name],
+         [makeEdge parentID iD myIndex],
+         findEdges,
+         iD : visitedAcc)
+        where
+          findEdges = foldl combineFind nullFind
+            $ map (\p -> findEdgesToExisting graph p iD) ptrs
+    in
+      if iD `elem` visitedAcc then
+        ([], [makeEdge parentID iD myIndex], nullFind, visitedAcc)
+      else case closure of
+        HV.ConsClosure _ ptrs dArgs pkg modl name -> let
+            returnDeadEnd node =
+              ([node], [makeEdge parentID iD myIndex], nullFind, iD : visitedAcc)
+          in case (pkg, modl, name) of
+            ("ghc-prim", "GHC.Types", "I#") -> returnDeadEnd
+              $ HM.insert (T.pack "name")
+                (Aeson.toJSON $ show $ (unsafeCoerce $ dArgs !! 0 :: Int))
+              $ HM.insert (T.pack "id") (Aeson.toJSON iD)
+              $ HM.empty
+            ("ghc-prim", "GHC.Types", "C#") -> returnDeadEnd
+              $ HM.insert (T.pack "name")
+                (Aeson.toJSON $ show $ (unsafeCoerce $ dArgs !! 0 :: Char))
+              $ HM.insert (T.pack "id") (Aeson.toJSON iD)
+              $ HM.empty
+            -- TODO: Float and double ignored since they need to be handled differently depending on the "word" size
+            otherwise -> let
+                (nodes, edges, findEdges, v, _) =
+                    foldl chainBuilds ([], [], nullFind, iD : visitedAcc, 0) ptrs
+                n = makeObjectWithName name
+                thisNode = case (pkg, modl, name) of
+                  ("ghc-prim", "GHC.Types", ":") ->
+                    HM.insert (T.pack "is-cons") (Aeson.Bool True) n
+                  otherwise -> n
+                thisEdge = makeEdge parentID iD myIndex
+              in (thisNode : nodes, thisEdge : edges, findEdges, v)
+        HV.ThunkClosure _ ptrs _ -> makeNodeAndFind "Thunk" ptrs
+        HV.APClosure _ _ _ _ ptrs -> makeNodeAndFind "Thunk" ptrs
+        HV.PAPClosure _ _ _ _ ptrs -> makeNodeAndFind "Partial AP" ptrs
+        HV.APStackClosure _ _ ptrs -> makeNodeAndFind "Thunk" ptrs
+        HV.BCOClosure _ _ _ ptr _ _ _ -> makeNodeAndFind "Bytecode" [ptr]
+        HV.ArrWordsClosure _ _ _ -> makeNodeAndFind "Array" []
+        HV.FunClosure _ ptrs _ -> makeNodeAndFind "Function" ptrs
+        HV.MutArrClosure _ _ _ ptrs -> makeNodeAndRecurse "Mut array" ptrs
+        HV.MutVarClosure _ ptr -> makeNodeAndRecurse "MVar" [ptr]
+        HV.SelectorClosure _ ptr -> let
+                (nodes, edges, findEdges, v) =
+                    innerBuild graph ptr iD 0 (iD : visitedAcc)
+            in
+                (makeObjectWithName "Selector" : nodes, makeEdge parentID iD myIndex : edges, findEdges, v)
+        HV.IndClosure _ ptr -> -- Ignore and keep going
+            innerBuild graph ptr parentID myIndex (iD : visitedAcc)
+        HV.BlackholeClosure _ ptr ->  -- Ignore and keep going
+            innerBuild graph ptr parentID myIndex (iD : visitedAcc)
+        otherwise -> ([], [], nullFind, iD : visitedAcc)
+    where
+    chainBuilds (nodes, edges, findEdges, v, i) ptr =
+        let (n, e, f, v1) = innerBuild graph ptr iD i v
+        in (n ++ nodes, e ++ edges, combineFind findEdges f, v1, i+1)
+    combineFind f1 f2 = \n v -> let
+            (e1, v1) = f1 n v
+            (e2, v2) = f2 n v1
+        in
+            (e2 ++ e1, v2)
+  Nothing -> ([], [], nullFind, visitedAcc)
+  where
+    nullFind = (\n v -> ([], v))
+
+-- This should be called on a COMPLETE list of nodes to be shown in the graph
+findEdgesToExisting :: HV.HeapGraph () -> Maybe Index -> Index -> [Node] -> [Index] -> ([Edge], [Index])
+findEdgesToExisting graph myPtr originID nodes visitedAcc = case myPtr of
+    Just iD -> let
+            closure = HV.hgeClosure $ fromJust $ HV.lookupHeapGraph iD graph
+        in
+            if any (hasID iD) nodes then -- If any nodes have this ID
+                ([makeEdge originID iD (-1)], visitedAcc)
+            else if iD `elem` visitedAcc then -- If we've otherwise been here
+                ([], visitedAcc)
+            else case closure of
+                HV.ConsClosure _ ptrs _ _ _ _ ->    processChildren ptrs
+                HV.ThunkClosure _ ptrs _ ->         processChildren ptrs
+                HV.APClosure _ _ _ _ ptrs ->        processChildren ptrs
+                HV.PAPClosure _ _ _ _ ptrs ->       processChildren ptrs
+                HV.APStackClosure _ _ ptrs ->       processChildren ptrs
+                HV.BCOClosure _ _ _ ptr _ _ _ ->   processChildren [ptr]
+                HV.ArrWordsClosure _ _ _ ->         ([], iD : visitedAcc)
+                HV.FunClosure _ ptrs _ ->           processChildren ptrs
+                HV.MutArrClosure _ _ _ ptrs ->      processChildren ptrs
+                HV.MutVarClosure _ ptr ->           processChildren [ptr]
+                HV.SelectorClosure _ ptr ->         processChildren [ptr]
+                HV.IndClosure _ ptr ->              processChildren [ptr]
+                HV.BlackholeClosure _ ptr ->        processChildren [ptr]
+                otherwise ->                        ([], iD : visitedAcc)
+        where
+            hasID iD node = getIntAttr "id" node == iD
+            chainFinds (edges, v) ptr =
+                let (e, v1) = findEdgesToExisting graph ptr originID nodes v
+                in (e ++ edges, v1)
+            processChildren ptrs = foldl chainFinds ([], iD : visitedAcc) ptrs
+    Nothing -> ([], visitedAcc)
+
+getName :: Node -> T.Text
+getName node = case node HM.! (T.pack "name") of
+  Aeson.String a -> a
+
+getIntAttr :: String -> Node -> Int
+getIntAttr attr node = case node HM.! (T.pack attr) of
+  Aeson.Number a -> case floatingOrInteger a of
+    Right i -> i
+
+makeEdge :: Index -> Index -> Int -> Aeson.Object
+makeEdge a b i = HM.insert (T.pack "source") (Aeson.toJSON a)
+             $ HM.insert (T.pack "target") (Aeson.toJSON b)
+             $ HM.insert (T.pack "ptr-index") (Aeson.toJSON i)
+             $ HM.empty
+
+{- DEBUG printing (pkg, modl, name) of data constructors
+buildJSGraph :: HV.HeapGraph () -> Aeson.Value
+buildJSGraph (HV.HeapGraph im) = unsafePerformIO $ do
+    IM.foldl (\a b -> printCons (HV.hgeClosure b) >> a) (return ()) im
+    return Aeson.Null
+
+
+printCons :: Closure -> IO ()
+printCons c = case c of
+    HV.ConsClosure info pArgs dArgs pkg modl name -> IO.putStrLn $ "Package [" ++ pkg ++ "] Module [" ++ modl ++ "] Name [" ++ name ++ "]"
+    _ -> return ()
+-}
+
 ----------------------------
 -- ToJSON implementations --
 ----------------------------
@@ -183,12 +411,12 @@ launchBrowser url = forkIO (Proc.rawSystem
     for an understanding of the closure types.
 
     Pointer fields are prefixed with "ptr" to make it easier to parse links in the graph.
--}
+
 
 instance Aeson.ToJSON b => Aeson.ToJSON (HV.GenClosure b) where
     toJSON closure = case closure of
         HV.ConsClosure info pArgs dArgs pkg modl name -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.String (T.pack "Data constructor"))
+            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Data constructor")
             $ HM.insert (T.pack "ptrArgs") (Aeson.toJSON pArgs)
             $ HM.insert (T.pack "dataArgs") Aeson.Null --TODO: Parse using cons info?
             $ HM.insert (T.pack "package") (Aeson.toJSON pkg)
@@ -213,12 +441,12 @@ instance Aeson.ToJSON b => Aeson.ToJSON (HV.GenClosure b) where
             $ HM.insert (T.pack "ptrIndirectee") (Aeson.toJSON indirectee)
             $ HM.empty
         HV.APClosure info _ nArgs fun args -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Generic application")
+            $ HM.insert (T.pack "closureType") (Aeson.toJSON "AP Thunk")
             $ HM.insert (T.pack "ptrFun") (Aeson.toJSON fun)
             $ HM.insert (T.pack "args") Aeson.Null --TODO: Need bitmap to separate pointers from data
             $ HM.empty
         HV.PAPClosure info arity nArgs fun args -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Partial application")
+            $ HM.insert (T.pack "closureType") (Aeson.toJSON "PA Function")
             $ HM.insert (T.pack "arity") (Aeson.toJSON arity)
             $ HM.insert (T.pack "ptrFun") (Aeson.toJSON fun)
             $ HM.insert (T.pack "args") Aeson.Null --TODO: Need bitmap to separate pointers from data
@@ -243,10 +471,11 @@ instance Aeson.ToJSON b => Aeson.ToJSON (HV.GenClosure b) where
             $ HM.insert (T.pack "ptrVar") (Aeson.toJSON var)
             $ HM.empty
         HV.FunClosure info pArgs dArgs -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Function closure")
+            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Function")
             $ HM.insert (T.pack "ptrArgs") (Aeson.toJSON pArgs)
             $ HM.insert (T.pack "dataArgs") Aeson.Null --TODO: Can we determine types?
             $ HM.empty
         _ -> Aeson.Object
             $ HM.insert (T.pack "closureType") (Aeson.toJSON "Other closure")
             $ HM.empty
+-}
