@@ -217,11 +217,11 @@ buildJSGraph graph label = let
                 adjustedEdges = map (\e -> HM.insert (T.pack "source") (Aeson.toJSON myID) e) edgesFromMergeables
                 -- Extract the text from the children
                 (leftText, rightText) = case length mergeables of
-                    0 -> (T.pack "_",T.pack "_")
+                    0 -> (T.pack "_",T.empty)
                     1 -> if getIntAttr "ptr-index" m1Edge == 0 then
-                            (m1Name, T.pack "_")
+                            (m1Name, T.empty)
                         else if T.head m1Name == '[' then
-                            (T.pack "_", T.dropEnd 1 $ T.tail m1Name)
+                            (T.pack "_", T.tail m1Name)
                         else
                             (T.pack "_", m1Name)
                         where m1 = head mergeables
@@ -229,12 +229,12 @@ buildJSGraph graph label = let
                               m1Edge = head edgesToMergeables
                     2 -> if getIntAttr "ptr-index" m1Edge == 0 then
                             if T.head m2Name == '[' then
-                                (m1Name, T.dropEnd 1 $ T.tail m2Name)
+                                (m1Name, T.tail m2Name)
                             else
                                 (m1Name, m2Name)
                         else
                             if T.head m1Name == '[' then
-                                (m2Name, T.dropEnd 1 $ T.tail m1Name)
+                                (m2Name, T.tail m1Name)
                             else
                                 (m2Name, m1Name)
                         where m1 = mergeables !! 0
@@ -243,7 +243,7 @@ buildJSGraph graph label = let
                               m2Name = getName m2
                               m1Edge = edgesToMergeables !! 0
                 -- Merge the text
-                name = '[' `T.cons` leftText +++ (',' `T.cons` rightText +++ (T.pack "]"))
+                name = '[' `T.cons` leftText +++ (',' `T.cons` rightText)
                 newNode = HM.insert (T.pack "name") (Aeson.toJSON name) thisNode
             in (newNode : (nodes \\ (thisNode:mergeables)), adjustedEdges ++ ((edges \\ edgesToMergeables) \\ edgesFromMergeables))
         -- Do the merging

@@ -16,17 +16,6 @@ ghci.onopen = function (event) {
     ghci.send("Connected to GHCi.");
 }
 
-// Send
-/*
-$("#commandLine").submit(function (e) {
-    e.preventDefault();
-    // Grab the input text, send it, and clear the box
-    var input = $("#theInput");
-    ghci.send(input.val());
-    input.val("");
-});
-*/
-
 // Check whether a string starts with the given prefix
 String.prototype.startsWith = function (str) {
     return this.lastIndexOf(str, 0) === 0;
@@ -177,15 +166,12 @@ ghci.onmessage = function(event) {
 
 // Burn it all
 function clearGraph() {
-    location.reload();
-    /*
     if (d3cola) {
         d3cola.stop();
         d3cola.nodes([]).links([]);
     }
     vis.selectAll("*").remove();
     d3cola = createD3Cola();
-    */
 }
 
 // Check whether browser is IE
