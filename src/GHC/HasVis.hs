@@ -101,7 +101,9 @@ mainThread = SK.withSocketsDo $ do
     -- Set up a thread to listen for incoming messages
     forkIO $ listenThread browser
     -- Begin reading messages
-    mainLoop browser
+    catch (mainLoop browser) $ \e -> do
+        return (e :: SomeException)
+        return ()
     -- Quit
     swapMVar visRunning False
     IO.putStrLn "Visualisation has closed. Call :vis again to re-initiate."

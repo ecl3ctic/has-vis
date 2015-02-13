@@ -107,24 +107,6 @@ ghci.onmessage = function(event) {
             .y(function (d) { return d.y; })
             .interpolate("linear");
 
-        var routeEdges = function () {
-            d3cola.prepareEdgeRouting(20);
-            link.attr("d", function (d) {
-                return lineFunction(d3cola.routeEdge(d
-                // // show visibility graph
-                    , function (g) {
-                        if (d.source.id === 10 && d.target.id === 11) { // TODO: WHAT IS THIS
-                        g.E.forEach(function (e) {
-                            vis.append("line").attr("x1", e.source.p.x).attr("y1", e.source.p.y)
-                                .attr("x2", e.target.p.x).attr("y2", e.target.p.y)
-                                .attr("stroke", "green");
-                        });
-                        }
-                    }));
-            });
-            if (isIE()) link.each(function (d) { this.parentNode.insertBefore(this, this) });
-        }
-
         // 10 iter no contraints, 30 iter some, 100 iter all.
         d3cola.start(10, 30, 100).on("tick", function () {
                 node.each(function (d) { d.innerBounds = d.bounds.inflate(-margin); })
@@ -143,8 +125,7 @@ ghci.onmessage = function(event) {
                 label
                     .attr("x", function (d) { return d.x })
                     .attr("y", function (d) { return d.y + (margin + pad) / 2 });
-
-            }).on("end", routeEdges);
+            });
     } else {
         // If the data is an object with an "action" property, execute the action.
         if (data && data.action) {
