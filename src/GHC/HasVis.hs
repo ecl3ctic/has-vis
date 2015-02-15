@@ -190,6 +190,7 @@ buildJSGraph graph label = let
         startNodeIndex = -1 :: Int
         startNode = HM.insert (T.pack "name") (Aeson.toJSON $ "Expression: " ++ label)
                   $ HM.insert (T.pack "id") (Aeson.toJSON startNodeIndex)
+                  $ HM.insert (T.pack "ptrCount") (Aeson.toJSON (1::Int))
                   $ HM.empty
         -- Build (most of) the graph.
         (allNodes, someEdges, findEdges, visitedAcc) =
@@ -197,30 +198,41 @@ buildJSGraph graph label = let
         -- Give the final list of nodes to the thunk which will search for the
         -- remaining edges to be shown.
         allEdges = fst (findEdges allNodes visitedAcc) ++ someEdges
+        -- For each node, record the number of edges coming from it
+        allNodesWithCount = map (\n -> let
+                iD = getIntAttr "id" n
+            in
+                HM.insert (T.pack "ptrCount") (Aeson.toJSON $ length $ selectEdgesWith "source" iD allEdges) n
+            ) allNodes
         -- Sort the cons nodes by biggest first so the merging happens in the right order
         biggestFirst a b = getIntAttr "id" b `compare` getIntAttr "id" a
-        consNodes = filter (\n -> getName n == T.pack ":") $ sortBy biggestFirst allNodes
+        consNodes = filter (\n -> getName n == T.pack ":") $ sortBy biggestFirst allNodesWithCount
         -- This huge nasty function takes the graph and returns a new graph with the
         -- children of the given cons node merged together if they have no other parents.
         mergeChildren :: [Node] -> [Edge] -> Node -> ([Node], [Edge])
         mergeChildren nodes edges thisNode = let
-                selectEdgesWith attr val = filter (\e -> getIntAttr attr e == val) edges
+
                 myID = getIntAttr "id" thisNode
-                myEdges = selectEdgesWith "source" myID
+                myEdges = selectEdgesWith "source" myID edges
+                myPtrCount = getIntAttr "ptrCount" thisNode
                 childNodes = filter (\n -> getIntAttr "id" n `elem` (map (getIntAttr "target") myEdges)) nodes
                 mergeables = filter (
                     \n -> let iD = getIntAttr "id" n in
                             iD /= myID
-                         && length (selectEdgesWith "target" iD) == 1
-                         && (length (selectEdgesWith "source" iD) == 0 || (isJust $ HM.lookup (T.pack "is-cons") n))) childNodes
-                edgesToMergeables = concat $ map (\n -> selectEdgesWith "target" $ getIntAttr "id" n) mergeables
-                edgesFromMergeables = concat $ map (\n -> selectEdgesWith "source" (getIntAttr "id" n)) mergeables
-                -- Change the owner of the edges
-                adjustedEdges = map (\e -> HM.insert (T.pack "source") (Aeson.toJSON myID) e) edgesFromMergeables
+                         && length (selectEdgesWith "target" iD edges) == 1
+                         && (length (selectEdgesWith "source" iD edges) == 0 || (isJust $ HM.lookup (T.pack "is-cons") n))) childNodes
+                myNewPtrCount = myPtrCount - length mergeables
+                edgesToMergeables = concat $ map (\n -> selectEdgesWith "target" (getIntAttr "id" n) edges) mergeables
+                edgesFromMergeables = concat $ map (\n -> selectEdgesWith "source" (getIntAttr "id" n) edges) mergeables
+                -- Change the owner of the edges, and renumber them
+                adjustedEdges = map (\(i,e) ->
+                    HM.insert (T.pack "source") (Aeson.toJSON myID)
+                  $ HM.insert (T.pack "ptrIndex") (Aeson.toJSON i)
+                    e) (zip [myNewPtrCount..] edgesFromMergeables)
                 -- Extract the text from the children
                 (leftText, rightText) = case length mergeables of
                     0 -> (T.pack "_",T.empty)
-                    1 -> if getIntAttr "ptr-index" m1Edge == 0 then
+                    1 -> if getIntAttr "ptrIndex" m1Edge == 0 then
                             (m1Name, T.empty)
                         else if T.head m1Name == '[' then
                             (T.pack "_", T.tail m1Name)
@@ -229,7 +241,7 @@ buildJSGraph graph label = let
                         where m1 = head mergeables
                               m1Name = getName m1
                               m1Edge = head edgesToMergeables
-                    2 -> if getIntAttr "ptr-index" m1Edge == 0 then
+                    2 -> if getIntAttr "ptrIndex" m1Edge == 0 then
                             if T.head m2Name == '[' then
                                 (m1Name, T.tail m2Name)
                             else
@@ -246,10 +258,12 @@ buildJSGraph graph label = let
                               m1Edge = edgesToMergeables !! 0
                 -- Merge the text
                 name = '[' `T.cons` leftText +++ (',' `T.cons` rightText)
-                newNode = HM.insert (T.pack "name") (Aeson.toJSON name) thisNode
+                newNode = HM.insert (T.pack "name") (Aeson.toJSON name)
+                        $ HM.insert (T.pack "ptrCount") (Aeson.toJSON (myNewPtrCount + length edgesFromMergeables))
+                          thisNode
             in (newNode : (nodes \\ (thisNode:mergeables)), adjustedEdges ++ ((edges \\ edgesToMergeables) \\ edgesFromMergeables))
         -- Do the merging
-        (finalNodes, finalEdges) = foldl (\(n,e) c -> mergeChildren n e c) (allNodes, allEdges) consNodes
+        (finalNodes, finalEdges) = foldl (\(n,e) c -> mergeChildren n e c) (allNodesWithCount, allEdges) consNodes
     in
         Aeson.toJSON (startNode : finalNodes, finalEdges)
 
@@ -268,25 +282,29 @@ innerBuild graph myPtr parentID myIndex visitedAcc = case myPtr of
         $ HM.empty
       makeNodeAndRecurse name ptrs = (n, e, f, v)-- Recurse again normally
         where (n, e, f, v, _) = foldl chainBuilds ([makeObjectWithName name],
-                                [makeEdge parentID iD myIndex],
+                                [makeEdgeI parentID iD myIndex],
                                 nullFind,
                                 iD : visitedAcc,
                                 0) ptrs
       makeNodeAndFind name ptrs = -- Switch to "find edges" mode
         ([makeObjectWithName name],
-         [makeEdge parentID iD myIndex],
+         [makeEdgeI parentID iD myIndex],
          findEdges,
          iD : visitedAcc)
         where
-          findEdges = foldl combineFind nullFind
-            $ map (\p -> findEdgesToExisting graph p iD) ptrs
+          findEdges :: [Node] -> [Index] -> ([Edge], [Index])
+          findEdges n v = let
+              (edges, visitedAcc) = (foldl combineFind nullFind
+                $ map (\p -> findEdgesToExisting graph p iD) ptrs) n v
+            in -- Add indices to the found edges
+              (map (uncurry addPtrIndex) (zip [0..] edges), visitedAcc)
     in
       if iD `elem` visitedAcc then
-        ([], [makeEdge parentID iD myIndex], nullFind, visitedAcc)
+        ([], [makeEdgeI parentID iD myIndex], nullFind, visitedAcc)
       else case closure of
         HV.ConsClosure _ ptrs dArgs pkg modl name -> let
             returnDeadEnd node =
-              ([node], [makeEdge parentID iD myIndex], nullFind, iD : visitedAcc)
+              ([node], [makeEdgeI parentID iD myIndex], nullFind, iD : visitedAcc)
           in case (pkg, modl, name) of
             ("ghc-prim", "GHC.Types", "I#") -> returnDeadEnd
               $ HM.insert (T.pack "name")
@@ -307,13 +325,13 @@ innerBuild graph myPtr parentID myIndex visitedAcc = case myPtr of
                   ("ghc-prim", "GHC.Types", ":") ->
                     HM.insert (T.pack "is-cons") (Aeson.Bool True) n
                   otherwise -> n
-                thisEdge = makeEdge parentID iD myIndex
+                thisEdge = makeEdgeI parentID iD myIndex
               in (thisNode : nodes, thisEdge : edges, findEdges, v)
         HV.ThunkClosure _ ptrs _ -> makeNodeAndFind "Thunk" ptrs
-        HV.APClosure _ _ _ _ ptrs -> makeNodeAndFind "Thunk" ptrs
-        HV.PAPClosure _ _ _ _ ptrs -> makeNodeAndFind "Partial AP" ptrs
-        HV.APStackClosure _ _ ptrs -> makeNodeAndFind "Thunk" ptrs
-        HV.BCOClosure _ _ _ ptr _ _ _ -> makeNodeAndFind "Bytecode" [ptr]
+        HV.APClosure _ _ _ fun ptrs -> makeNodeAndFind "Thunk" (fun : ptrs)
+        HV.PAPClosure _ _ _ fun ptrs -> makeNodeAndFind "Partial AP" (fun : ptrs)
+        HV.APStackClosure _ fun ptrs -> makeNodeAndFind "Thunk" (fun : ptrs)
+        HV.BCOClosure _ instrs lits ptrs _ _ _ -> makeNodeAndFind "Bytecode" [instrs, lits, ptrs]
         HV.ArrWordsClosure _ _ _ -> makeNodeAndFind "Array" []
         HV.FunClosure _ ptrs _ -> makeNodeAndFind "Function" ptrs
         HV.MutArrClosure _ _ _ ptrs -> makeNodeAndRecurse "Mut array" ptrs
@@ -322,7 +340,7 @@ innerBuild graph myPtr parentID myIndex visitedAcc = case myPtr of
                 (nodes, edges, findEdges, v) =
                     innerBuild graph ptr iD 0 (iD : visitedAcc)
             in
-                (makeObjectWithName "Selector" : nodes, makeEdge parentID iD myIndex : edges, findEdges, v)
+                (makeObjectWithName "Selector" : nodes, makeEdgeI parentID iD myIndex : edges, findEdges, v)
         HV.IndClosure _ ptr -> -- Ignore and keep going
             innerBuild graph ptr parentID myIndex (iD : visitedAcc)
         HV.BlackholeClosure _ ptr ->  -- Ignore and keep going
@@ -348,16 +366,16 @@ findEdgesToExisting graph myPtr originID nodes visitedAcc = case myPtr of
             closure = HV.hgeClosure $ fromJust $ HV.lookupHeapGraph iD graph
         in
             if any (hasID iD) nodes then -- If any nodes have this ID
-                ([makeEdge originID iD (-1)], visitedAcc)
+                ([makeEdge originID iD], visitedAcc)
             else if iD `elem` visitedAcc then -- If we've otherwise been here
                 ([], visitedAcc)
             else case closure of
                 HV.ConsClosure _ ptrs _ _ _ _ ->    processChildren ptrs
                 HV.ThunkClosure _ ptrs _ ->         processChildren ptrs
-                HV.APClosure _ _ _ _ ptrs ->        processChildren ptrs
-                HV.PAPClosure _ _ _ _ ptrs ->       processChildren ptrs
-                HV.APStackClosure _ _ ptrs ->       processChildren ptrs
-                HV.BCOClosure _ _ _ ptr _ _ _ ->   processChildren [ptr]
+                HV.APClosure _ _ _ fun ptrs ->        processChildren (fun : ptrs)
+                HV.PAPClosure _ _ _ fun ptrs ->       processChildren (fun : ptrs)
+                HV.APStackClosure _ fun ptrs ->       processChildren (fun : ptrs)
+                HV.BCOClosure _ instrs lits ptrs _ _ _ ->   processChildren [instrs, lits, ptrs]
                 HV.ArrWordsClosure _ _ _ ->         ([], iD : visitedAcc)
                 HV.FunClosure _ ptrs _ ->           processChildren ptrs
                 HV.MutArrClosure _ _ _ ptrs ->      processChildren ptrs
@@ -383,11 +401,19 @@ getIntAttr attr node = case node HM.! (T.pack attr) of
   Aeson.Number a -> case floatingOrInteger a of
     Right i -> i
 
-makeEdge :: Index -> Index -> Int -> Aeson.Object
-makeEdge a b i = HM.insert (T.pack "source") (Aeson.toJSON a)
+makeEdge :: Index -> Index -> Aeson.Object
+makeEdge a b = HM.insert (T.pack "source") (Aeson.toJSON a)
              $ HM.insert (T.pack "target") (Aeson.toJSON b)
-             $ HM.insert (T.pack "ptr-index") (Aeson.toJSON i)
              $ HM.empty
+
+addPtrIndex :: Int -> Aeson.Object -> Aeson.Object
+addPtrIndex i e = HM.insert (T.pack "ptrIndex") (Aeson.toJSON i) e
+
+-- Make edge between 'a' and 'b' with pointer index 'i'
+makeEdgeI :: Index -> Index -> Int -> Aeson.Object
+makeEdgeI a b i = addPtrIndex i $ makeEdge a b
+
+selectEdgesWith attr val edges = filter (\e -> getIntAttr attr e == val) edges
 
 {- DEBUG printing (pkg, modl, name) of data constructors
 buildJSGraph :: HV.HeapGraph () -> Aeson.Value

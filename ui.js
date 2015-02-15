@@ -51,7 +51,8 @@ ghci.onmessage = function(event) {
             if (sourceNode && targetNode) {
               links.push({
                   source: sourceNode,
-                  target: targetNode
+                  target: targetNode,
+                  ptrIndex: e.ptrIndex
               });
             }
         });
@@ -67,11 +68,11 @@ ghci.onmessage = function(event) {
 
         d3cola
             .avoidOverlaps(true)
-            .flowLayout('x', 150)
+            .flowLayout('y', 120)
             .size([canvasWidth, canvasHeight])
             .nodes(nodes)
             .links(links)
-            .jaccardLinkLengths(150);
+            .jaccardLinkLengths(120);
 
         // Create link graphics
         var link = vis.selectAll(".link")
@@ -80,7 +81,7 @@ ghci.onmessage = function(event) {
             .attr("class", "link");
 
         // Create node graphics
-        var margin = 10, pad = 12;
+        var margin = 8, pad = 8;
         var node = vis.selectAll(".node")
             .data(nodes)
             .enter().append("rect")
@@ -117,7 +118,13 @@ ghci.onmessage = function(event) {
 
                 link.attr("d", function (d) {
                     cola.vpsc.makeEdgeBetween(d, d.source.innerBounds, d.target.innerBounds, 5);
-                    var lineData = [{ x: d.sourceIntersection.x, y: d.sourceIntersection.y }, { x: d.arrowStart.x, y: d.arrowStart.y }];
+                    // Interval between edge x positions
+                    var intervalLength = d.source.innerBounds.width() / d.source.ptrCount;
+                    var lineData = [
+                      { x: d.source.innerBounds.x + (0.5 + d.ptrIndex) * intervalLength,
+                        y: d.sourceIntersection.y },
+                      { x: d.arrowStart.x,
+                        y: d.arrowStart.y }];
                     return lineFunction(lineData);
                 });
                 if (isIE()) link.each(function (d) { this.parentNode.insertBefore(this, this) });
