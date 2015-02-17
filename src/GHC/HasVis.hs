@@ -23,7 +23,7 @@ import Control.Monad
 import System.IO.Unsafe
 import Data.Maybe (fromJust, isJust)
 import Unsafe.Coerce (unsafeCoerce)
-import Data.List (sortBy, (\\))
+import Data.List (elemIndex, sortBy, (\\))
 
 -- TODO: Test HasVis on Windows
 #if WINDOWS
@@ -211,24 +211,38 @@ buildJSGraph graph label = let
         -- children of the given cons node merged together if they have no other parents.
         mergeChildren :: [Node] -> [Edge] -> Node -> ([Node], [Edge])
         mergeChildren nodes edges thisNode = let
-
                 myID = getIntAttr "id" thisNode
-                myEdges = selectEdgesWith "source" myID edges
                 myPtrCount = getIntAttr "ptrCount" thisNode
+                myEdges = selectEdgesWith "source" myID edges
                 childNodes = filter (\n -> getIntAttr "id" n `elem` (map (getIntAttr "target") myEdges)) nodes
                 mergeables = filter (
                     \n -> let iD = getIntAttr "id" n in
                             iD /= myID
                          && length (selectEdgesWith "target" iD edges) == 1
-                         && (length (selectEdgesWith "source" iD edges) == 0 || (isJust $ HM.lookup (T.pack "is-cons") n))) childNodes
-                myNewPtrCount = myPtrCount - length mergeables
+                         && (length (selectEdgesWith "source" iD edges) == 0 || (isJust $ HM.lookup (T.pack "isCons") n))) childNodes
                 edgesToMergeables = concat $ map (\n -> selectEdgesWith "target" (getIntAttr "id" n) edges) mergeables
-                edgesFromMergeables = concat $ map (\n -> selectEdgesWith "source" (getIntAttr "id" n) edges) mergeables
-                -- Change the owner of the edges, and renumber them
-                adjustedEdges = map (\(i,e) ->
-                    HM.insert (T.pack "source") (Aeson.toJSON myID)
-                  $ HM.insert (T.pack "ptrIndex") (Aeson.toJSON i)
-                    e) (zip [myNewPtrCount..] edgesFromMergeables)
+                edgesFromMergeables = map (\n -> selectEdgesWith "source" (getIntAttr "id" n) edges) mergeables
+                myNewPtrCount = myPtrCount - length mergeables + length (concat edgesFromMergeables)
+                -- Iterate over the existing edges of this node and the edges to be merged
+                -- and renumber them into a new contiguous sequence.
+                myNewEdges = renumberEdges 0 0
+                renumberEdges iOrig iNew = if iOrig == myPtrCount then [] else
+                    if currEdge `elem` edgesToMergeables then let
+                            mergeI = fromJust $ elemIndex currEdge edgesToMergeables
+                            mergeableEdges = edgesFromMergeables !! mergeI
+                            mergeableCount = length mergeableEdges
+                        in
+                            (renumberM iNew mergeableEdges) ++ renumberEdges (iOrig + 1) (iNew + mergeableCount)
+                    else
+                        (HM.insert (T.pack "ptrIndex") (Aeson.toJSON iNew) currEdge) : renumberEdges (iOrig + 1) (iNew + 1)
+                    where
+                        currEdge = head $ selectEdgesWith "ptrIndex" iOrig myEdges
+                        -- Renumber the edges of the mergeable node and change their owner
+                        renumberM startI edges = map (\(i,e) ->
+                            HM.insert (T.pack "source") (Aeson.toJSON myID)
+                          $ HM.insert (T.pack "ptrIndex") (Aeson.toJSON i)
+                            e) (zip [startI..] edges)
+
                 -- Extract the text from the children
                 (leftText, rightText) = case length mergeables of
                     0 -> (T.pack "_",T.empty)
@@ -259,9 +273,9 @@ buildJSGraph graph label = let
                 -- Merge the text
                 name = '[' `T.cons` leftText +++ (',' `T.cons` rightText)
                 newNode = HM.insert (T.pack "name") (Aeson.toJSON name)
-                        $ HM.insert (T.pack "ptrCount") (Aeson.toJSON (myNewPtrCount + length edgesFromMergeables))
+                        $ HM.insert (T.pack "ptrCount") (Aeson.toJSON myNewPtrCount)
                           thisNode
-            in (newNode : (nodes \\ (thisNode:mergeables)), adjustedEdges ++ ((edges \\ edgesToMergeables) \\ edgesFromMergeables))
+            in (newNode : (nodes \\ (thisNode:mergeables)), myNewEdges ++ ((edges \\ myEdges) \\ concat edgesFromMergeables))
         -- Do the merging
         (finalNodes, finalEdges) = foldl (\(n,e) c -> mergeChildren n e c) (allNodesWithCount, allEdges) consNodes
     in
@@ -323,7 +337,7 @@ innerBuild graph myPtr parentID myIndex visitedAcc = case myPtr of
                 n = makeObjectWithName name
                 thisNode = case (pkg, modl, name) of
                   ("ghc-prim", "GHC.Types", ":") ->
-                    HM.insert (T.pack "is-cons") (Aeson.Bool True) n
+                    HM.insert (T.pack "isCons") (Aeson.Bool True) n
                   otherwise -> n
                 thisEdge = makeEdgeI parentID iD myIndex
               in (thisNode : nodes, thisEdge : edges, findEdges, v)
