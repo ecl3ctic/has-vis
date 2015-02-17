@@ -17,6 +17,7 @@ import qualified Data.Text as T
 import qualified Data.Vector as Vec
 -- Other
 import qualified System.IO as IO
+import System.Process (createProcess, proc)
 import Control.Exception
 import Control.Concurrent
 import Control.Monad
@@ -25,12 +26,6 @@ import Data.Maybe (fromJust, isJust)
 import Unsafe.Coerce (unsafeCoerce)
 import Data.List (elemIndex, sortBy, (\\))
 
--- TODO: Test HasVis on Windows
-#if WINDOWS
-import Foreign.C.String (CString, withCString)
-#else
-import qualified System.Process as Proc
-#endif
 
 (+++) = T.append
 
@@ -163,20 +158,18 @@ listenThread browser = do
 
 -- Launch web app in default web browser
 launchBrowser :: String -> IO ()
-
+launchBrowser url = forkIO (do
+        (stdin, stdout, stderr, process) <- createProcess $ proc
 #if WINDOWS
-foreign import ccall "launchBrowser"
-    launchBrowser' :: CString -> IO ()
-launchBrowser url = withCString url launchBrowser'
+            "start"
+#elif MAC
+            "open"
 #else
-launchBrowser url = forkIO (Proc.rawSystem
-#if MAC
-    "open"
-#else
-    "xdg-open"
+            "xdg-open"
 #endif
-    [url] >> return ()) >> return ()
-#endif
+            [url]
+        return ()
+    ) >> return ()
 
 type Index = HV.HeapGraphIndex
 type Closure = HV.GenClosure (Maybe Index)
@@ -428,96 +421,3 @@ makeEdgeI :: Index -> Index -> Int -> Aeson.Object
 makeEdgeI a b i = addPtrIndex i $ makeEdge a b
 
 selectEdgesWith attr val edges = filter (\e -> getIntAttr attr e == val) edges
-
-{- DEBUG printing (pkg, modl, name) of data constructors
-buildJSGraph :: HV.HeapGraph () -> Aeson.Value
-buildJSGraph (HV.HeapGraph im) = unsafePerformIO $ do
-    IM.foldl (\a b -> printCons (HV.hgeClosure b) >> a) (return ()) im
-    return Aeson.Null
-
-
-printCons :: Closure -> IO ()
-printCons c = case c of
-    HV.ConsClosure info pArgs dArgs pkg modl name -> IO.putStrLn $ "Package [" ++ pkg ++ "] Module [" ++ modl ++ "] Name [" ++ name ++ "]"
-    _ -> return ()
--}
-
-----------------------------
--- ToJSON implementations --
-----------------------------
-{-
-    Convert heap objects to JSON format. See
-    http://hackage.haskell.org/package/ghc-heap-view-0.5.3/docs/GHC-HeapView.html
-    and
-    https://ghc.haskell.org/trac/ghc/wiki/Commentary/Rts/Storage/HeapObjects
-    for an understanding of the closure types.
-
-    Pointer fields are prefixed with "ptr" to make it easier to parse links in the graph.
-
-
-instance Aeson.ToJSON b => Aeson.ToJSON (HV.GenClosure b) where
-    toJSON closure = case closure of
-        HV.ConsClosure info pArgs dArgs pkg modl name -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Data constructor")
-            $ HM.insert (T.pack "ptrArgs") (Aeson.toJSON pArgs)
-            $ HM.insert (T.pack "dataArgs") Aeson.Null --TODO: Parse using cons info?
-            $ HM.insert (T.pack "package") (Aeson.toJSON pkg)
-            $ HM.insert (T.pack "module") (Aeson.toJSON modl)
-            $ HM.insert (T.pack "name") (Aeson.toJSON name)
-            $ HM.empty
-        HV.ThunkClosure info pArgs dArgs -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Thunk")
-            $ HM.insert (T.pack "ptrArgs") (Aeson.toJSON pArgs)
-            $ HM.insert (T.pack "dataArgs") Aeson.Null --TODO: Can we determine types?
-            $ HM.empty
-        HV.SelectorClosure info selectee -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Selector thunk")
-            $ HM.insert (T.pack "ptrSelectee") (Aeson.toJSON selectee)
-            $ HM.empty
-        HV.IndClosure info indirectee -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Indirection")
-            $ HM.insert (T.pack "ptrIndirectee") (Aeson.toJSON indirectee)
-            $ HM.empty
-        HV.BlackholeClosure info indirectee -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Black hole")
-            $ HM.insert (T.pack "ptrIndirectee") (Aeson.toJSON indirectee)
-            $ HM.empty
-        HV.APClosure info _ nArgs fun args -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "AP Thunk")
-            $ HM.insert (T.pack "ptrFun") (Aeson.toJSON fun)
-            $ HM.insert (T.pack "args") Aeson.Null --TODO: Need bitmap to separate pointers from data
-            $ HM.empty
-        HV.PAPClosure info arity nArgs fun args -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "PA Function")
-            $ HM.insert (T.pack "arity") (Aeson.toJSON arity)
-            $ HM.insert (T.pack "ptrFun") (Aeson.toJSON fun)
-            $ HM.insert (T.pack "args") Aeson.Null --TODO: Need bitmap to separate pointers from data
-            $ HM.empty
-        HV.APStackClosure info closure stackData -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Stack application")
-            $ HM.insert (T.pack "ptrFun") (Aeson.toJSON closure)
-            $ HM.empty
-        HV.BCOClosure info _ _ ptr _ _ _ -> Aeson.Object --TODO: Can we get useful info from bytecode?
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Byte code object")
-            $ HM.insert (T.pack "ptr") (Aeson.toJSON ptr)
-            $ HM.empty
-        HV.ArrWordsClosure info _ _ -> Aeson.Object --TODO: Decoding arrays might be hard
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Array")
-            $ HM.empty
-        HV.MutArrClosure info _ _ elems -> Aeson.Object --TODO: Decoding arrays might be hard
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Mutable array")
-            $ HM.insert (T.pack "ptrElems") (Aeson.toJSON elems)
-            $ HM.empty
-        HV.MutVarClosure info var -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "MVar")
-            $ HM.insert (T.pack "ptrVar") (Aeson.toJSON var)
-            $ HM.empty
-        HV.FunClosure info pArgs dArgs -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Function")
-            $ HM.insert (T.pack "ptrArgs") (Aeson.toJSON pArgs)
-            $ HM.insert (T.pack "dataArgs") Aeson.Null --TODO: Can we determine types?
-            $ HM.empty
-        _ -> Aeson.Object
-            $ HM.insert (T.pack "closureType") (Aeson.toJSON "Other closure")
-            $ HM.empty
--}

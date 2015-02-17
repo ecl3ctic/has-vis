@@ -27,7 +27,8 @@ library
                         containers >= 0.5.5,
                         unordered-containers >= 0.2.5.1,
                         scientific >= 0.3.3.7,
-                        vector >= 0.10.9.1
+                        vector >= 0.10.9.1,
+                        process >= 1.2.2.0
     hs-source-dirs:     src/
     -- Configuration for the code to launch a web browser
     if os(windows)
