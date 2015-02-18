@@ -17,7 +17,7 @@ import qualified Data.Text as T
 import qualified Data.Vector as Vec
 -- Other
 import qualified System.IO as IO
-import System.Process (createProcess, proc)
+import System.Process (createProcess, CreateProcess(std_out, std_err), proc, StdStream(CreatePipe))
 import Control.Exception
 import Control.Concurrent
 import Control.Monad
@@ -159,7 +159,7 @@ listenThread browser = do
 -- Launch web app in default web browser
 launchBrowser :: String -> IO ()
 launchBrowser url = forkIO (do
-        (stdin, stdout, stderr, process) <- createProcess $ proc
+        (_, _, _, _) <- createProcess (proc
 #if WINDOWS
             "start"
 #elif MAC
@@ -167,7 +167,7 @@ launchBrowser url = forkIO (do
 #else
             "xdg-open"
 #endif
-            [url]
+            [url]) {std_out = CreatePipe, std_err = CreatePipe} -- Throw output away
         return ()
     ) >> return ()
 

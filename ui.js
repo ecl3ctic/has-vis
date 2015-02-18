@@ -103,10 +103,6 @@ ghci.onmessage = function(event) {
                 d.height = b.height + extra;
             });
 
-        var lineFuncLinear = d3.svg.line()
-            .x(function (d) { return d.x; })
-            .y(function (d) { return d.y; })
-            .interpolate("linear");
         var lineFuncSpline = d3.svg.line()
             .x(function (d) { return d.x; })
             .y(function (d) { return d.y; })
@@ -127,21 +123,22 @@ ghci.onmessage = function(event) {
                     var xStart = d.source.innerBounds.x + (0.5 + d.ptrIndex) * intervalLength;
                     var yStart = d.source.innerBounds.y + d.source.innerBounds.height();
 
+                    var lineData;
                     if (d.source === d.target) { // Add an extra control point for loops
-                        var lineData = [
+                        lineData = [
                           { x: xStart, y: yStart},
                           { x: xStart - 15, y: yStart + 40},
                           { x: xStart + 15, y: yStart + 40},
                           { x: xStart, y: yStart}
                         ];
-                        return lineFuncSpline(lineData);
                     } else {
-                        var lineData = [
+                        lineData = [
                           { x: xStart, y: yStart},
+                          { x: xStart, y: yStart + 20},
                           { x: d.arrowStart.x, y: d.arrowStart.y }
                         ];
-                        return lineFuncLinear(lineData);
                     }
+                    return lineFuncSpline(lineData);
                 });
                 if (isIE()) link.each(function (d) { this.parentNode.insertBefore(this, this) });
 

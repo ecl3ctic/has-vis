@@ -32,5 +32,6 @@ library
     hs-source-dirs:     src/
     if os(windows)
         cpp-options: -DWINDOWS
-    else if os(darwin)
-        cpp-options: -DMAC
+    else
+        if os(darwin)
+            cpp-options: -DMAC
