@@ -1,8 +1,8 @@
-HasVis is a library which enables one to visualise the heap representation of a value in a GHCi session. The value is represented as a graph, and displayed as an SVG image in the browser.
+HasVis is a library which enables one to visualise the heap representation of a value in a GHCi session. The value is represented as a graph, and displayed as an interactive SVG image in the browser.
 
 Graph layout is done using [WebCola](https://github.com/tgdwyer/WebCola).
 
-The library is inspired by [ghc-vis](http://felsin9.de/nnis/ghc-vis/). The main improvement is in the presentation - HasVis tries to improve readability by hiding all unnecessary information, using a more sophisticated layout algorithm, and handling lists specially. It does not simply display the raw contents of the heap.
+The library is inspired by [ghc-vis](http://felsin9.de/nnis/ghc-vis/). The main improvement is in the presentation - HasVis tries to improve readability by hiding all unnecessary information, using a more sophisticated layout algorithm, and handling lists specially. It does not just display the raw contents of the heap.
 
 ### Setup
 
