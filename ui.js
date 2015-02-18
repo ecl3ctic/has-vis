@@ -103,10 +103,14 @@ ghci.onmessage = function(event) {
                 d.height = b.height + extra;
             });
 
-        var lineFunction = d3.svg.line()
+        var lineFuncLinear = d3.svg.line()
             .x(function (d) { return d.x; })
             .y(function (d) { return d.y; })
             .interpolate("linear");
+        var lineFuncSpline = d3.svg.line()
+            .x(function (d) { return d.x; })
+            .y(function (d) { return d.y; })
+            .interpolate("basis");
 
         // 10 iter no contraints, 30 iter some, 100 iter all.
         d3cola.start(10, 30, 100).on("tick", function () {
@@ -120,12 +124,24 @@ ghci.onmessage = function(event) {
                     cola.vpsc.makeEdgeBetween(d, d.source.innerBounds, d.target.innerBounds, 5);
                     // Interval between edge x positions
                     var intervalLength = d.source.innerBounds.width() / d.source.ptrCount;
-                    var lineData = [
-                      { x: d.source.innerBounds.x + (0.5 + d.ptrIndex) * intervalLength,
-                        y: d.sourceIntersection.y },
-                      { x: d.arrowStart.x,
-                        y: d.arrowStart.y }];
-                    return lineFunction(lineData);
+                    var xStart = d.source.innerBounds.x + (0.5 + d.ptrIndex) * intervalLength;
+                    var yStart = d.source.innerBounds.y + d.source.innerBounds.height();
+
+                    if (d.source === d.target) { // Add an extra control point for loops
+                        var lineData = [
+                          { x: xStart, y: yStart},
+                          { x: xStart - 15, y: yStart + 40},
+                          { x: xStart + 15, y: yStart + 40},
+                          { x: xStart, y: yStart}
+                        ];
+                        return lineFuncSpline(lineData);
+                    } else {
+                        var lineData = [
+                          { x: xStart, y: yStart},
+                          { x: d.arrowStart.x, y: d.arrowStart.y }
+                        ];
+                        return lineFuncLinear(lineData);
+                    }
                 });
                 if (isIE()) link.each(function (d) { this.parentNode.insertBefore(this, this) });
 
