@@ -166,8 +166,8 @@ launchBrowser url = forkIO (do
         return ()
     ) >> return ()
 
-type Index = HV.HeapGraphIndex
-type Closure = HV.GenClosure (Maybe Index)
+type HGIndex = HV.HeapGraphIndex
+type Closure = HV.GenClosure (Maybe HGIndex)
 type Node = Aeson.Object
 type Edge = Aeson.Object
 
@@ -185,12 +185,12 @@ buildJSGraph graph label = let
             innerBuild graph (Just HV.heapGraphRoot) startNodeIndex 0 []
         -- Give the final list of nodes to the thunk which will search for the
         -- remaining edges to be shown.
-        allEdges = fst (findEdges allNodes visitedAcc) ++ someEdges
+        allEdges = someEdges ++ fst (findEdges allNodes visitedAcc)
         -- For each node, record the number of edges coming from it
         allNodesWithCount = map (\n -> let
                 iD = getIntAttr "id" n
             in
-                HM.insert (T.pack "ptrCount") (Aeson.toJSON $ length $ selectEdgesWith "source" iD allEdges) n
+                HM.insert (T.pack "ptrCount") (Aeson.toJSON $ length $ filterEdgesWith "source" iD allEdges) n
             ) allNodes
         -- Sort the cons nodes by biggest first so the merging happens in the right order
         biggestFirst a b = getIntAttr "id" b `compare` getIntAttr "id" a
@@ -201,15 +201,15 @@ buildJSGraph graph label = let
         mergeChildren nodes edges thisNode = let
                 myID = getIntAttr "id" thisNode
                 myPtrCount = getIntAttr "ptrCount" thisNode
-                myEdges = selectEdgesWith "source" myID edges
+                myEdges = filterEdgesWith "source" myID edges
                 childNodes = filter (\n -> getIntAttr "id" n `elem` (map (getIntAttr "target") myEdges)) nodes
                 mergeables = filter (
                     \n -> let iD = getIntAttr "id" n in
                             iD /= myID
-                         && length (selectEdgesWith "target" iD edges) == 1
-                         && (length (selectEdgesWith "source" iD edges) == 0 || (isJust $ HM.lookup (T.pack "isCons") n))) childNodes
-                edgesToMergeables = concat $ map (\n -> selectEdgesWith "target" (getIntAttr "id" n) edges) mergeables
-                edgesFromMergeables = map (\n -> selectEdgesWith "source" (getIntAttr "id" n) edges) mergeables
+                         && length (filterEdgesWith "target" iD edges) == 1
+                         && (length (filterEdgesWith "source" iD edges) == 0 || (isJust $ HM.lookup (T.pack "isCons") n))) childNodes
+                edgesToMergeables = concat $ map (\n -> filterEdgesWith "target" (getIntAttr "id" n) edges) mergeables
+                edgesFromMergeables = map (\n -> filterEdgesWith "source" (getIntAttr "id" n) edges) mergeables
                 myNewPtrCount = myPtrCount - length mergeables + length (concat edgesFromMergeables)
                 -- Iterate over the existing edges of this node and the edges to be merged
                 -- and renumber them into a new contiguous sequence.
@@ -224,7 +224,7 @@ buildJSGraph graph label = let
                     else
                         (HM.insert (T.pack "ptrIndex") (Aeson.toJSON iNew) currEdge) : renumberEdges (iOrig + 1) (iNew + 1)
                     where
-                        currEdge = head $ selectEdgesWith "ptrIndex" iOrig myEdges
+                        currEdge = head $ filterEdgesWith "ptrIndex" iOrig myEdges
                         -- Renumber the edges of the mergeable node and change their owner
                         renumberM startI edges = map (\(i,e) ->
                             HM.insert (T.pack "source") (Aeson.toJSON myID)
@@ -269,12 +269,13 @@ buildJSGraph graph label = let
     in
         Aeson.toJSON (startNode : finalNodes, finalEdges)
 
+-- Recursively build the JSON graph for the subgraph starting at the given node, avoiding already-visited nodes
 innerBuild :: HV.HeapGraph ()
-    -> Maybe Index
-    -> Index
+    -> Maybe HGIndex -- The starting node
+    -> HGIndex -- The parent that we took to get here
     -> Int -- The index of this node in the parent's pointers
-    -> [Index] -- Accumulator of visited nodes
-    -> ([Node], [Edge], ([Node] -> [Index] -> ([Edge], [Index])), [Index]) -- Return the subgraph, a closure to generate the rest of the edges, and the accumulator
+    -> [HGIndex] -- Accumulator of visited nodes
+    -> ([Node], [Edge], ([Node] -> [HGIndex] -> ([Edge], [HGIndex])), [HGIndex]) -- Return the subgraph, a closure to generate the rest of the edges, and the accumulator
 innerBuild graph myPtr parentID myIndex visitedAcc = case myPtr of
   Just iD -> let
       closure = HV.hgeClosure $ fromJust $ HV.lookupHeapGraph iD graph
@@ -294,7 +295,7 @@ innerBuild graph myPtr parentID myIndex visitedAcc = case myPtr of
          findEdges,
          iD : visitedAcc)
         where
-          findEdges :: [Node] -> [Index] -> ([Edge], [Index])
+          findEdges :: [Node] -> [HGIndex] -> ([Edge], [HGIndex])
           findEdges n v = let
               (edges, visitedAcc) = (foldl combineFind nullFind
                 $ map (\p -> findEdgesToExisting graph p iD) ptrs) n v
@@ -361,8 +362,9 @@ innerBuild graph myPtr parentID myIndex visitedAcc = case myPtr of
   where
     nullFind = (\n v -> ([], v))
 
--- This should be called on a COMPLETE list of nodes to be shown in the graph
-findEdgesToExisting :: HV.HeapGraph () -> Maybe Index -> Index -> [Node] -> [Index] -> ([Edge], [Index])
+-- Find the edges in this subgraph that point back to nodes that have already been added to the graph.
+-- This should be called with a COMPLETE list of nodes for the graph.
+findEdgesToExisting :: HV.HeapGraph () -> Maybe HGIndex -> HGIndex -> [Node] -> [HGIndex] -> ([Edge], [HGIndex])
 findEdgesToExisting graph myPtr originID nodes visitedAcc = case myPtr of
     Just iD -> let
             closure = HV.hgeClosure $ fromJust $ HV.lookupHeapGraph iD graph
@@ -398,12 +400,13 @@ getName :: Node -> T.Text
 getName node = case node HM.! (T.pack "name") of
   Aeson.String a -> a
 
+-- Retrieve the attribute of type Int with the given name
 getIntAttr :: String -> Node -> Int
 getIntAttr attr node = case node HM.! (T.pack attr) of
   Aeson.Number a -> case floatingOrInteger a of
     Right i -> i
 
-makeEdge :: Index -> Index -> Aeson.Object
+makeEdge :: HGIndex -> HGIndex -> Aeson.Object
 makeEdge a b = HM.insert (T.pack "source") (Aeson.toJSON a)
              $ HM.insert (T.pack "target") (Aeson.toJSON b)
              $ HM.empty
@@ -411,8 +414,9 @@ makeEdge a b = HM.insert (T.pack "source") (Aeson.toJSON a)
 addPtrIndex :: Int -> Aeson.Object -> Aeson.Object
 addPtrIndex i e = HM.insert (T.pack "ptrIndex") (Aeson.toJSON i) e
 
--- Make edge between 'a' and 'b' with pointer index 'i'
-makeEdgeI :: Index -> Index -> Int -> Aeson.Object
+-- Make an edge between 'a' and 'b', and assign the pointer index 'i'
+makeEdgeI :: HGIndex -> HGIndex -> Int -> Aeson.Object
 makeEdgeI a b i = addPtrIndex i $ makeEdge a b
 
-selectEdgesWith attr val edges = filter (\e -> getIntAttr attr e == val) edges
+-- Filter edges from the list that have the given Int attribute
+filterEdgesWith attr val edges = filter (\e -> getIntAttr attr e == val) edges
