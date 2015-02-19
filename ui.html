@@ -48,10 +48,11 @@
     </style>
     <body>
         <h1>HasVis</h1>
+        <p id="connectionMessage">Connecting to GHCi...</p>
 
         <script type="text/javascript">
             var canvasWidth = 1200;
-            var canvasHeight = 900;
+            var canvasHeight = 850;
 
             var svg = d3.select("body")
                 .append("svg")
@@ -71,9 +72,6 @@
                 vis.attr("transform", "translate(" + d3.event.translate + ")" + " scale(" + d3.event.scale + ")");
             }
 
-            // Set initial zoom
-            d3.behavior.zoom().scale(0.6);
-
             svg.append('svg:defs').append('svg:marker')
                 .attr('id', 'end-arrow')
                 .attr('viewBox', '0 -5 10 10')
@@ -86,11 +84,6 @@
                 .attr('stroke-width', '0px')
                 .attr('fill', '#000');
         </script>
-
-        <!--<form id="commandLine">
-            <p>GHCi command:</p>
-            <input id="theInput" size="80"></input>
-        </form>-->
 
         <script type="text/javascript" src="ui.js"></script>
     </body>

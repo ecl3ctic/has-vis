@@ -1,6 +1,6 @@
 {-# LANGUAGE CPP #-}
 
-module GHC.HasVis (vis, view, update, clear) where
+module GHC.HasVis (vis, view, clear, close) where
 
 -- Imports for networking
 import qualified Network.Socket as SK
@@ -26,18 +26,14 @@ import Data.Maybe (fromJust, isJust)
 import Unsafe.Coerce (unsafeCoerce)
 import Data.List (elemIndex, sortBy, (\\))
 
-
-(+++) = T.append
-
 -- Whether the visualisation is currently running
 visRunning :: MVar Bool
 visRunning = unsafePerformIO (newMVar False)
 
 -- Messages for the main thread to act upon
-data Message = ViewMessage HV.Box String   -- visualise the boxed value
-             | UpdateMessage            -- update the visualisation
-             | ClearMessage             -- clear the visualisation
-             | CloseMessage             -- close the visualisation
+data Message = ViewMessage HV.Box String  -- visualise the boxed value
+             | ClearMessage               -- clear the visualisation
+             | CloseMessage               -- close the visualisation
 
 -- Messages from GHCi and the listener to the main thread
 messageChan :: Chan Message
@@ -56,14 +52,13 @@ vis = do
 view :: a -> String -> IO ()
 view a label = sendOnChan $ ViewMessage (HV.asBox a) label
 
--- Update the visualisation
--- This is needed if values are changed from GHCi's side
-update :: IO ()
-update = sendOnChan UpdateMessage
-
 -- Clear the visualisation
 clear :: IO ()
 clear = sendOnChan ClearMessage
+
+-- Close the browser window
+close :: IO ()
+close = sendOnChan CloseMessage
 
 -- Send a message to the main thread
 sendOnChan :: Message -> IO ()
@@ -78,7 +73,7 @@ port :: Int
 port = 56250
 
 -- This thread acts as the intermediary between GHCi and the browser.
--- It is responsible for taking commands from both and manipulating the data
+-- It is responsible for taking commands from both and processing the data
 -- to be visualised.
 mainThread :: IO ()
 mainThread = SK.withSocketsDo $ do
@@ -95,7 +90,7 @@ mainThread = SK.withSocketsDo $ do
     browser <- WSK.acceptRequest pending'
     -- Set up a thread to listen for incoming messages
     forkIO $ listenThread browser
-    -- Begin reading messages
+    -- Begin reading messages (catch exceptions so we can exit cleanly)
     catch (mainLoop browser) $ \e -> do
         return (e :: SomeException)
         return ()
@@ -110,13 +105,13 @@ mainLoop browser = do
     message <- readChan messageChan
     case message of
         ViewMessage box label -> do
-            -- Build the heap graph
+            -- Build the heap graph to depth of 1000; we're likely to get
+            -- performance problems long before hitting this limit.
             graph <- HV.buildHeapGraph 1000 () box
             -- Construct a simplified JSON version and send it to the browser
             let jsGraph = buildJSGraph graph label
             WSK.sendDataMessage browser (WSK.Text (Aeson.encode jsGraph))
             mainLoop browser
-        UpdateMessage -> mainLoop browser -- TODO
         ClearMessage -> do
             let obj = Aeson.Object
                     $ HM.insert (T.pack "action") (Aeson.toJSON "clear")
@@ -264,7 +259,7 @@ buildJSGraph graph label = let
                               m2Name = getName m2
                               m1Edge = edgesToMergeables !! 0
                 -- Merge the text
-                name = '[' `T.cons` leftText +++ (',' `T.cons` rightText)
+                name = '[' `T.cons` leftText `T.append` (',' `T.cons` rightText)
                 newNode = HM.insert (T.pack "name") (Aeson.toJSON name)
                         $ HM.insert (T.pack "ptrCount") (Aeson.toJSON myNewPtrCount)
                           thisNode

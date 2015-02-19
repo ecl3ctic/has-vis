@@ -2,3 +2,4 @@
 :def view   \x -> return $ "GHC.HasVis.view (" ++ x ++ ") " ++ show x
 :def update \_ -> return $ "GHC.HasVis.update"
 :def clear  \_ -> return $ "GHC.HasVis.clear"
+:def close  \_ -> return $ "GHC.HasVis.close"

@@ -11,21 +11,19 @@ function createD3Cola() {
 
 var port = 56250;
 var ghci = new WebSocket("ws://localhost:" + port);
-
-ghci.onopen = function (event) {
-    ghci.send("Connected to GHCi.");
-}
-
-// Check whether a string starts with the given prefix
-String.prototype.startsWith = function (str) {
-    return this.lastIndexOf(str, 0) === 0;
-};
-
 var nodes;
 var links;
 
+ghci.onopen = function (event) {
+    $("#connectionMessage").text("Connected.");
+}
+
+ghci.onclose = function (event) {
+    clearWindow();
+}
+
 // Receive
-ghci.onmessage = function(event) {
+ghci.onmessage = function (event) {
     var data;
     try {
         data = $.parseJSON(event.data);
@@ -38,10 +36,10 @@ ghci.onmessage = function(event) {
 
         // Parse nodes
         nodes = data[0];
-        linksByID = data[1]; // Before processing
-        links = []; // Hold references rather than IDs
+        links = [];
 
-        linksByID.forEach(function(e) {
+        // Process each of the links, hooking up references to their nodes
+        data[1].forEach(function(e) {
             var sourceNode = nodes.filter(function(n) {
                 return n.id === e.source;
             })[0],
@@ -63,9 +61,7 @@ ghci.onmessage = function(event) {
             val.y = Math.random() * canvasHeight;
         });
 
-        // Give graph info to Cola for solving
-        //d3cola.nodes(nodes).links(links);
-
+        // Initialize Cola
         d3cola
             .avoidOverlaps(true)
             .flowLayout('y', 120)
@@ -74,22 +70,22 @@ ghci.onmessage = function(event) {
             .links(links)
             .jaccardLinkLengths(120);
 
-        // Create link graphics
-        var link = vis.selectAll(".link")
-            .data(links)
-            .enter().append("path")
-            .attr("class", "link");
-
         // Create node graphics
-        var margin = 8, pad = 8;
         var node = vis.selectAll(".node")
             .data(nodes)
             .enter().append("rect")
             .attr("class", "node")
             .call(d3cola.drag);
 
+        // Create link graphics
+        var link = vis.selectAll(".link")
+            .data(links)
+            .enter().append("path")
+            .attr("class", "link");
+
         // Create label graphics, and calculate node
         // boundaries for use by the layout algorithm.
+        var margin = 8, pad = 8;
         var label = vis.selectAll(".label")
             .data(nodes)
             .enter().append("text")
@@ -103,6 +99,7 @@ ghci.onmessage = function(event) {
                 d.height = b.height + extra;
             });
 
+        // Draw lines using a B-spline
         var lineFuncSpline = d3.svg.line()
             .x(function (d) { return d.x; })
             .y(function (d) { return d.y; })
@@ -118,6 +115,7 @@ ghci.onmessage = function(event) {
 
                 link.attr("d", function (d) {
                     cola.vpsc.makeEdgeBetween(d, d.source.innerBounds, d.target.innerBounds, 5);
+
                     // Interval between edge x positions
                     var intervalLength = d.source.innerBounds.width() / d.source.ptrCount;
                     var xStart = d.source.innerBounds.x + (0.5 + d.ptrIndex) * intervalLength;
@@ -151,11 +149,11 @@ ghci.onmessage = function(event) {
         if (data && data.action) {
             switch (data.action) {
                 case "clear":
-                    // Clear the graph
                     clearGraph();
                     break;
                 case "close":
-                    window.close();
+                    clearWindow();
+                    break;
                 default:
                     console.log("Unknown action: " + data.action);
             }
@@ -165,7 +163,6 @@ ghci.onmessage = function(event) {
     }
 }
 
-// Burn it all
 function clearGraph() {
     if (d3cola) {
         d3cola.stop();
@@ -173,6 +170,13 @@ function clearGraph() {
     }
     vis.selectAll("*").remove();
     d3cola = createD3Cola();
+}
+
+function clearWindow() {
+    clearGraph();
+    $("body").contents().hide();
+    $("body").append("<h1>Connection to the terminal has been lost.</h1>");
+    $("body").append("<p>The visualisation may have been closed at the terminal. This window must be closed manually.</p>");
 }
 
 // Check whether browser is IE
